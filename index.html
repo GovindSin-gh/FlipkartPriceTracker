@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flipkart Price Tracker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Manrope', system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 3px solid #2874f0; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-900 min-h-screen">
+
+<header class="bg-[#2874f0] text-white">
+  <div class="max-w-5xl mx-auto px-4 py-6 flex flex-wrap items-center justify-between gap-4">
+    <h1 class="text-2xl font-extrabold tracking-tight">Flipkart Price Tracker</h1>
+    <div class="flex items-center gap-3">
+      <span id="activeCount" class="bg-white text-[#2874f0] font-extrabold rounded-full px-4 py-1.5 text-sm">0 active</span>
+      <span id="conn" class="bg-[#ffe500] text-slate-900 font-semibold rounded-full px-4 py-1.5 text-sm">Connecting…</span>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 py-8 space-y-10">
+
+  <!-- Add form -->
+  <section aria-labelledby="addH" class="bg-white border-2 border-slate-900 rounded-xl p-5">
+    <h2 id="addH" class="text-lg font-extrabold mb-4">Track a new product</h2>
+    <form id="addForm" class="grid gap-4 md:grid-cols-[1fr_200px_auto] items-end">
+      <label class="block">
+        <span class="text-sm font-semibold">Flipkart product link</span>
+        <input id="url" type="url" required placeholder="https://www.flipkart.com/…"
+               class="mt-1 w-full border-2 border-slate-300 rounded-lg px-3 py-2.5 focus:border-[#2874f0]">
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold">Target budget (₹)</span>
+        <input id="target" type="number" min="1" step="any" required placeholder="49999"
+               class="mt-1 w-full border-2 border-slate-300 rounded-lg px-3 py-2.5 focus:border-[#2874f0]">
+      </label>
+      <button id="addBtn" type="submit"
+              class="bg-slate-900 text-white font-bold rounded-lg px-6 py-3 hover:bg-[#2874f0] transition-colors disabled:opacity-50">
+        Start tracking
+      </button>
+    </form>
+    <p id="formMsg" role="status" class="text-sm mt-3 min-h-[1.25rem]"></p>
+  </section>
+
+  <!-- Active -->
+  <section aria-labelledby="activeH">
+    <h2 id="activeH" class="text-lg font-extrabold mb-3">Active trackers</h2>
+    <div id="activeList" class="grid gap-4 md:grid-cols-2"></div>
+  </section>
+
+  <!-- History -->
+  <section aria-labelledby="histH">
+    <h2 id="histH" class="text-lg font-extrabold mb-3">Alerts and history</h2>
+    <div id="histList" class="grid gap-4 md:grid-cols-2"></div>
+  </section>
+</main>
+
+<script>
+/* ============ CONFIG: paste your Supabase project values ============ */
+const SUPABASE_URL = "https://ohmkdgjwjmyihaehodjd.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_tkuFo4sMwpp22ZMW6pxq0A_QRsI_qrW";
+/* ================================================================== */
+
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = (id) => document.getElementById(id);
+let rows = [];
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const inr = (n) => (n == null ? "Not checked yet" : "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 }));
+const day = (d) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "");
+
+const BADGE = {
+  ACTIVE: "bg-blue-100 text-blue-800",
+  ALERT_SENT: "bg-[#ffe500] text-slate-900",
+  RESOLVED: "bg-green-100 text-green-800",
+};
+const LABEL = { ACTIVE: "Watching", ALERT_SENT: "Budget met", RESOLVED: "Resolved" };
+
+function card(r) {
+  const met = r.latest_price != null && r.latest_price <= r.target_price;
+  const title = r.product_title || "Waiting for first price check";
+  const tick = r.status === "ALERT_SENT"
+    ? `<button data-resolve="${esc(r.id)}" aria-label="Mark ${esc(title)} as resolved" title="Mark as resolved"
+         class="shrink-0 w-11 h-11 rounded-full bg-green-600 text-white text-2xl font-bold hover:bg-green-700 transition-colors">✓</button>`
+    : "";
+  return `
+  <article class="bg-white border-2 ${r.status === "ALERT_SENT" ? "border-[#ffe500] ring-2 ring-[#ffe500]" : "border-slate-200"} rounded-xl p-4 flex flex-col gap-3">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <span class="inline-block text-xs font-bold rounded-full px-2.5 py-1 ${BADGE[r.status]}">${LABEL[r.status]}</span>
+        <h3 class="font-bold mt-2 leading-snug break-words">${esc(title)}</h3>
+      </div>
+      ${tick}
+    </div>
+    <dl class="grid grid-cols-2 gap-3 text-sm">
+      <div><dt class="text-slate-500">Your budget</dt><dd class="font-extrabold text-lg">${inr(r.target_price)}</dd></div>
+      <div><dt class="text-slate-500">Latest price</dt>
+        <dd class="font-extrabold text-lg ${met ? "text-green-700" : ""}">${inr(r.latest_price)}</dd></div>
+    </dl>
+    <div class="flex items-center justify-between text-xs text-slate-500">
+      <span>Added ${day(r.created_at)}</span>
+      <a href="${esc(r.product_url)}" target="_blank" rel="noopener noreferrer" class="font-bold text-[#2874f0] underline">Open on Flipkart</a>
+    </div>
+  </article>`;
+}
+
+function empty(msg) {
+  return `<p class="md:col-span-2 border-2 border-dashed border-slate-300 rounded-xl p-6 text-slate-500 text-center">${msg}</p>`;
+}
+
+function render() {
+  const active = rows.filter((r) => r.status === "ACTIVE");
+  const history = rows.filter((r) => r.status !== "ACTIVE");
+  history.sort((a, b) => (a.status === b.status ? 0 : a.status === "ALERT_SENT" ? -1 : 1));
+  $("activeCount").textContent = `${active.length} active`;
+  $("activeList").innerHTML = active.length ? active.map(card).join("") : empty("Nothing is being tracked. Add a Flipkart link above.");
+  $("histList").innerHTML = history.length ? history.map(card).join("") : empty("Alerts and resolved items will show up here.");
+}
+
+function setConn(ok, text) {
+  const el = $("conn");
+  el.textContent = text;
+  el.className = `${ok ? "bg-[#ffe500] text-slate-900" : "bg-red-600 text-white"} font-semibold rounded-full px-4 py-1.5 text-sm`;
+}
+
+async function load() {
+  const { data, error } = await db.from("price_trackers").select("*").order("created_at", { ascending: false });
+  if (error) { setConn(false, "Database error"); $("formMsg").textContent = "Could not load trackers: " + error.message; return; }
+  rows = data; setConn(true, "Live"); render();
+}
+
+$("addForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("formMsg"), btn = $("addBtn");
+  const url = $("url").value.trim(), target = parseFloat($("target").value);
+
+  let host = "";
+  try { host = new URL(url).hostname; } catch (_) {}
+  if (!/(^|\.)flipkart\.com$|(^|\.)fkrt\.(it|cc)$/.test(host)) {
+    msg.className = "text-sm mt-3 text-red-600"; msg.textContent = "Enter a link from flipkart.com."; return;
+  }
+  btn.disabled = true; msg.className = "text-sm mt-3 text-slate-600"; msg.textContent = "Saving…";
+
+  const { data, error } = await db.from("price_trackers")
+    .insert({ product_url: url, target_price: target, status: "ACTIVE" }).select().single();
+  btn.disabled = false;
+  if (error) { msg.className = "text-sm mt-3 text-red-600"; msg.textContent = "Could not save: " + error.message; return; }
+
+  rows.unshift(data); render(); e.target.reset();
+  msg.className = "text-sm mt-3 text-green-700";
+  msg.textContent = "Tracking started. The first price check runs at the next scheduled run.";
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-resolve]");
+  if (!btn) return;
+  btn.disabled = true;
+  const id = btn.dataset.resolve;
+  const { error } = await db.from("price_trackers").update({ status: "RESOLVED" }).eq("id", id);
+  if (error) { btn.disabled = false; $("formMsg").className = "text-sm mt-3 text-red-600"; $("formMsg").textContent = "Could not resolve: " + error.message; return; }
+  const r = rows.find((x) => x.id === id); if (r) r.status = "RESOLVED";
+  render();
+});
+
+load();
+</script>
+</body>
+</html>
